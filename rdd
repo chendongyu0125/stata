@@ -1,0 +1,179 @@
+/* rdd 断点回归 
+断点回归教程
+
+author: dongyu chen 
+source :https://blog.csdn.net/arlionn/article/details/103854103
+
+*/
+
+clear all
+global dir /Users/dongyu/Documents/RDDStata
+capture mkdir $dir
+cd $dir
+
+set obs 4000
+set seed 123
+gen x=runiform()
+gen xc = x-0.5
+
+
+histogram x
+histogram xc
+
+gen e =rnormal()/5
+
+gen nm = rnormal()
+histogram nm
+histogram e
+
+gen z1=rnormal()*0.5
+histogram z1
+
+drop z0
+gen z0=invnormal(uniform()) //生成0-1之间的均匀分布，然后用该值生成标准正态分布
+histogram z0
+
+gen z2=1+3*invnormal(uniform()) + sin(x*5)/3+e
+histogram z2
+
+gen T=0
+replace T=1 if x>0.5  //x- 年份>2012或<=2012, 在2012之后，施加某种政策，
+//该政策会导致结果变量有1个单位的变化
+
+gen g0=0+3*log(x+1) + sin(x*6)/3  //90是对照组，2012年之后也没有施加这项政策
+gen g1 = T + 3*log(x+1) +sin(x*6)/3 //g1变量是实验组，2012年之后施加了该项政策
+
+//或者启用另一个解释：
+//600分以上考上985；600分以下没考上， x就是这个分数
+//上了大学的，施加一个treatment,即读了985大学，该部分为实验组为 g1
+//对照组为g0,即使考过600分，也没上985
+scatter g0 x
+
+histogram g0
+histogram g1
+plot x g0 g1
+
+scatter g1 x
+scatter g0 x
+
+gen y1 = g1 + 0.5*z1 + 0.3*z2 +e
+gen y0=g0+0.5*z1+0.3*z2+e
+
+scatter y1 x
+scatter y0 x
+
+label var y1 "outcome variable (y)"
+label var y0 "outcome variable (y)"
+label var x "assignment variable"
+label var xc "centered assignment variable (x-0.5)"
+label var T "T=1 for x>0.5, T=0 otherwise"
+
+drop e g*
+save "RDD_simu_data0.dta", replace
+
+
+twoway (scatter y0 xc, msymbol(+) msize(*0.4) mcolor(black*0.3)), title("无断点")
+graph save y0, replace
+twoway (scatter y1 xc, msymbol(+) msize(*0.4) mcolor(black*0.3)), title("有断点")
+graph save y1, replace
+
+graph combine y0.gph y1.gph, row(1)
+
+twoway (scatter y1 xc, msymbol(+) msize(*.4) mcolor(black*0.3)), title("散点图")
+graph save scatter.gph, replace
+rdplot y1 xc, c(0) p(1) graph_options(title("线性拟合"))
+graph save rd1, replace
+rdplot y1 xc, c(0) p(2) graph_options(title("二次拟合"))
+graph save rd2, replace
+graph combine scatter.gph rd1.gph rd2.gph
+
+
+use "RDD_simu_data0.dta", clear
+set matsize 2000
+set seed 135
+sample 10
+rdplot y1 xc, c(0)
+
+rd y1 xc, c(0)
+rdrobust y1 xc, c(0) p(1)
+rdcv y1 xc, thr(0) deg(1)
+
+use "RDD_simu_data0.dta", clear
+rdrobust y1 xc
+rdrobust y1 xc, p(2)
+rdrobust y1 xc, p(3)
+
+rdplot z1 xc graph_options(title(z1平滑性检验))
+graph save rdz1_smooth, replace
+rdplot z2 xc graph_options(title(z2平滑线检验))
+graph save rdz2_smooth, replace 
+graph combine rdz1_smooth.gph rdz2_smooth.gph
+
+rdrobust z1 xc
+rdrobust z2 xc
+
+rdrobust y1 xc
+
+local h=e(h_l)
+rddensity xc, p(1) hl(`h') hr(`h')
+
+use "RDD_simu_data0.dta", clear
+sum xc
+local xcmax=r(max)
+local xcmin=r(min)
+
+forvalues i=1(1)4{
+	local jr=`xcmax' / (`i'+1)
+	local jl=`xcmin' / (`i'+1)
+	rdrobust y1 xc if xc>0, c(`jr')
+	estimates store jr`i'
+	rdrobust y1 xc if xc<0, c(`jl')
+	estimates store jl`i'
+}
+
+rdrobust y1 xc, c(0)
+est store jbaseline
+
+local vlist "jl4 jl3 jl1 jl1 jbaseline jr1 jr2 jr3 jr4"
+coefplot `vlist', yline(0) drop(_cons) vertical
+
+
+/*
+由于越接近断点的样本，越有动机去人为操控，我们删除最接近断点的样本，来观察回归是否显著（甜甜圈效应, donut hole approach ）。如果仍旧存在，说明即使存在人为操控，断点效应仍旧存在。下面代码里，我们分别删除了断点附近 5%，10%，15%，25% 和 30% 的样本，进行了 6 组稳健性检验。图形给出了回归系数和 95% 的置信区间。可知，在删除 20% 及以下时，回归结果都保持显著。
+————————————————
+版权声明：本文为CSDN博主「arlionn」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+原文链接：https://blog.csdn.net/arlionn/article/details/103854103
+*/
+sum xc
+local xcmax =r(max)
+forvalues i=1(1)6{
+local j=`xcmax'*0.05*`i'
+rdrobust y1 xc if abs(xc)>`j'
+estimates store obrob`i'
+}
+
+//输出图形
+local vlist "obrob1 obrob2 obrob3  obrob4 obrob5 obrob6"
+coefplot `vlist', yline(0) drop(_cons) vertical
+
+
+/*
+5.3 带宽选择的敏感性检验
+带宽长度会显著影响回归结果，一个稳健的结果要求对带宽长度不那么敏感。下面代码里，我们先通过rdrobust命令提取最优带宽h，然后分别手动设置带宽为 h 的 25%-400% 倍，看回归结果是否仍旧显著。图形给出了回归系数和95%的置信区间。可知，在最优带宽 25%-400% 范围内，回归结果保持显著，说明结论较为可靠。
+————————————————
+版权声明：本文为CSDN博主「arlionn」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+原文链接：https://blog.csdn.net/arlionn/article/details/103854103
+*/
+rdrobust y1 xc
+local h=e(h_l) //最优带宽
+
+forvalues i=1(1)8{
+local hrobust =`h'*0.25*`i'
+rdrobust y1 xc, h(`hrobust')
+estimates store hrob`i'
+}
+
+//输出图形
+local vlist "hrob1 hrob2 hrob3 hrob4 hrob5 hrob6 hrob7 hrob8"
+coefplot `vlist', yline(0) drop(_cons) vertical
+
